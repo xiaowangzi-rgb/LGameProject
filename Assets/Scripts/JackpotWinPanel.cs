@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
 using UnityEngine.Video;
@@ -48,9 +49,10 @@ public class JackpotWinPanel : MonoBehaviour
     [SerializeField] private VideoPlayer videoPlayer;            // 视频播放器
     [SerializeField] private RawImage videoDisplay;              // 视频显示的RawImage
     [SerializeField] private GameObject videoContainer;          // 视频容器（可选，用于整体显示/隐藏）
-    [SerializeField] private VideoClip videoClip;                // 要播放的视频
-    [SerializeField] private bool loopVideo = false;             // 是否循环播放
+    [SerializeField] private List<VideoClip> videoClips = new List<VideoClip>();  // 要播放的视频列表（依次播放）
+    [SerializeField] private bool loopLastVideo = false;         // 是否循环播放最后一个视频
     [SerializeField] private float videoFadeInDuration = 0.3f;   // 视频淡入时长
+    [SerializeField] private float videoTransitionDelay = 0f;    // 视频之间的过渡延迟
     
     // 进度条完成回调
     public event Action OnProgressComplete;
@@ -110,19 +112,19 @@ public class JackpotWinPanel : MonoBehaviour
         // 立即停止可能正在播放的视频
         videoPlayer.Stop();
         
-        // 设置视频源
-        if (videoClip != null)
+        // 设置第一个视频源（如果有）
+        if (videoClips != null && videoClips.Count > 0 && videoClips[0] != null)
         {
-            videoPlayer.clip = videoClip;
+            videoPlayer.clip = videoClips[0];
         }
         
         videoPlayer.playOnAwake = false;
-        videoPlayer.isLooping = loopVideo;
+        videoPlayer.isLooping = false; // 初始不循环，由播放逻辑控制
         
-        // 创建RenderTexture用于显示视频
-        if (videoDisplay != null && videoClip != null)
+        // 创建RenderTexture用于显示视频（使用第一个视频的尺寸）
+        if (videoDisplay != null && videoClips != null && videoClips.Count > 0 && videoClips[0] != null)
         {
-            videoRenderTexture = new RenderTexture((int)videoClip.width, (int)videoClip.height, 0);
+            videoRenderTexture = new RenderTexture((int)videoClips[0].width, (int)videoClips[0].height, 0);
             videoPlayer.targetTexture = videoRenderTexture;
             videoDisplay.texture = videoRenderTexture;
         }
@@ -251,10 +253,10 @@ public class JackpotWinPanel : MonoBehaviour
         // 进度条完成回调
         OnProgressComplete?.Invoke();
         
-        // 阶段5：播放视频
-        if (videoPlayer != null && videoClip != null)
+        // 阶段5：播放视频（支持多个视频依次播放）
+        if (videoPlayer != null && videoClips != null && videoClips.Count > 0)
         {
-            yield return StartCoroutine(PlayVideoAnimation());
+            yield return StartCoroutine(PlayAllVideosAnimation());
         }
         
         // 全部完成回调
@@ -408,11 +410,11 @@ public class JackpotWinPanel : MonoBehaviour
     }
     
     /// <summary>
-    /// 播放视频动画（包含淡入效果）
+    /// 播放所有视频（依次播放）
     /// </summary>
-    private IEnumerator PlayVideoAnimation()
+    private IEnumerator PlayAllVideosAnimation()
     {
-        if (videoPlayer == null) yield break;
+        if (videoPlayer == null || videoClips == null || videoClips.Count == 0) yield break;
         
         isVideoPlaying = true;
         
@@ -420,13 +422,69 @@ public class JackpotWinPanel : MonoBehaviour
         SetProgressVisible(false);
         SetVideoVisible(true);
         
-        // 设置视频显示初始透明度为0
+        // 设置视频显示初始透明度为0（只在第一个视频时淡入）
         if (videoDisplay != null)
         {
             videoDisplay.color = new Color(1f, 1f, 1f, 0f);
         }
         
-        // 准备并播放视频
+        for (int i = 0; i < videoClips.Count; i++)
+        {
+            VideoClip clip = videoClips[i];
+            if (clip == null) continue;
+            
+            bool isFirstVideo = (i == 0);
+            bool isLastVideo = (i == videoClips.Count - 1);
+            
+            // 播放单个视频
+            yield return StartCoroutine(PlaySingleVideoAnimation(clip, isFirstVideo, isLastVideo && loopLastVideo));
+            
+            // 如果是最后一个视频且循环播放，不继续
+            if (isLastVideo && loopLastVideo) yield break;
+            
+            // 视频之间的过渡延迟
+            if (!isLastVideo && videoTransitionDelay > 0)
+            {
+                yield return new WaitForSeconds(videoTransitionDelay);
+            }
+        }
+        
+        isVideoPlaying = false;
+        OnVideoComplete?.Invoke();
+    }
+    
+    /// <summary>
+    /// 播放单个视频动画
+    /// </summary>
+    /// <param name="clip">要播放的视频</param>
+    /// <param name="fadeIn">是否淡入</param>
+    /// <param name="loop">是否循环</param>
+    private IEnumerator PlaySingleVideoAnimation(VideoClip clip, bool fadeIn, bool loop)
+    {
+        if (videoPlayer == null || clip == null) yield break;
+        
+        // 设置视频源
+        videoPlayer.clip = clip;
+        videoPlayer.isLooping = loop;
+        
+        // 更新RenderTexture尺寸（如果视频尺寸不同）
+        if (videoRenderTexture == null || 
+            videoRenderTexture.width != (int)clip.width || 
+            videoRenderTexture.height != (int)clip.height)
+        {
+            if (videoRenderTexture != null)
+            {
+                videoRenderTexture.Release();
+            }
+            videoRenderTexture = new RenderTexture((int)clip.width, (int)clip.height, 0);
+            videoPlayer.targetTexture = videoRenderTexture;
+            if (videoDisplay != null)
+            {
+                videoDisplay.texture = videoRenderTexture;
+            }
+        }
+        
+        // 准备视频
         videoPlayer.Prepare();
         
         // 等待视频准备完成
@@ -438,8 +496,8 @@ public class JackpotWinPanel : MonoBehaviour
         // 开始播放
         videoPlayer.Play();
         
-        // 视频淡入效果
-        if (videoDisplay != null && videoFadeInDuration > 0)
+        // 视频淡入效果（只在第一个视频时）
+        if (fadeIn && videoDisplay != null && videoFadeInDuration > 0)
         {
             float elapsed = 0f;
             while (elapsed < videoFadeInDuration)
@@ -453,15 +511,13 @@ public class JackpotWinPanel : MonoBehaviour
         }
         
         // 如果不循环，等待视频播放完成
-        if (!loopVideo)
+        if (!loop)
         {
             while (videoPlayer.isPlaying)
             {
                 yield return null;
             }
         }
-        
-        isVideoPlaying = false;
     }
     
     /// <summary>
@@ -474,13 +530,13 @@ public class JackpotWinPanel : MonoBehaviour
     }
     
     /// <summary>
-    /// 手动播放视频
+    /// 手动播放视频（播放所有视频列表）
     /// </summary>
     public void PlayVideo()
     {
-        if (videoPlayer != null && !isVideoPlaying)
+        if (videoPlayer != null && !isVideoPlaying && videoClips != null && videoClips.Count > 0)
         {
-            StartCoroutine(PlayVideoAnimation());
+            StartCoroutine(PlayAllVideosAnimation());
         }
     }
     
@@ -519,17 +575,22 @@ public class JackpotWinPanel : MonoBehaviour
     }
     
     /// <summary>
-    /// 设置视频源
+    /// 设置单个视频源（会清除之前的视频列表）
     /// </summary>
     public void SetVideoClip(VideoClip clip)
     {
-        videoClip = clip;
-        if (videoPlayer != null)
+        videoClips.Clear();
+        if (clip != null)
+        {
+            videoClips.Add(clip);
+        }
+        
+        if (videoPlayer != null && clip != null)
         {
             videoPlayer.clip = clip;
             
             // 重新创建RenderTexture
-            if (videoDisplay != null && clip != null)
+            if (videoDisplay != null)
             {
                 if (videoRenderTexture != null)
                 {
@@ -540,6 +601,54 @@ public class JackpotWinPanel : MonoBehaviour
                 videoDisplay.texture = videoRenderTexture;
             }
         }
+    }
+    
+    /// <summary>
+    /// 设置多个视频源（依次播放）
+    /// </summary>
+    public void SetVideoClips(List<VideoClip> clips)
+    {
+        videoClips.Clear();
+        if (clips != null)
+        {
+            videoClips.AddRange(clips);
+        }
+        
+        // 设置第一个视频
+        if (videoPlayer != null && videoClips.Count > 0 && videoClips[0] != null)
+        {
+            videoPlayer.clip = videoClips[0];
+            
+            if (videoDisplay != null)
+            {
+                if (videoRenderTexture != null)
+                {
+                    videoRenderTexture.Release();
+                }
+                videoRenderTexture = new RenderTexture((int)videoClips[0].width, (int)videoClips[0].height, 0);
+                videoPlayer.targetTexture = videoRenderTexture;
+                videoDisplay.texture = videoRenderTexture;
+            }
+        }
+    }
+    
+    /// <summary>
+    /// 添加视频到列表末尾
+    /// </summary>
+    public void AddVideoClip(VideoClip clip)
+    {
+        if (clip != null)
+        {
+            videoClips.Add(clip);
+        }
+    }
+    
+    /// <summary>
+    /// 清空视频列表
+    /// </summary>
+    public void ClearVideoClips()
+    {
+        videoClips.Clear();
     }
 
     /// <summary>

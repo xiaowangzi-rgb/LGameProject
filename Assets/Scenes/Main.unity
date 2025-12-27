@@ -696,9 +696,12 @@ MonoBehaviour:
   videoPlayer: {fileID: 217166242}
   videoDisplay: {fileID: 623297850}
   videoContainer: {fileID: 623297848}
-  videoClip: {fileID: 32900000, guid: 3aead4d67c7aeb1419c151bfd2026f08, type: 3}
-  loopVideo: 0
+  videoClips:
+  - {fileID: 32900000, guid: fe2ec00da6338cd40a77f09650103468, type: 3}
+  - {fileID: 32900000, guid: 4103a0a6114fb794e9b41393dd824fae, type: 3}
+  loopLastVideo: 1
   videoFadeInDuration: 2
+  videoTransitionDelay: 0
 --- !u!1001 &470652179
 PrefabInstance:
   m_ObjectHideFlags: 0
